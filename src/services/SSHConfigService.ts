@@ -6,7 +6,7 @@ import * as vscode from 'vscode';
 import { Profile } from '../types';
 
 const SSH_CONFIG_PATH = path.join(os.homedir(), '.ssh', 'config');
-const MARKER_PREFIX = '# GitSwitch:';
+const MARKER_PREFIX = '# GitFlip:';
 
 interface SSHHostEntry {
   marker: string;
@@ -22,7 +22,7 @@ export class SSHConfigService {
       return;
     }
 
-    // Check if this host already exists in the config (any origin, not just GitSwitch)
+    // Check if this host already exists in the config (any origin, not just GitFlip)
     const existingHosts = this.getAllSSHConfigHosts();
     if (existingHosts.some(h => h.host === profile.sshHost)) {
       return;
@@ -57,7 +57,7 @@ export class SSHConfigService {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
 
-      // Start skipping when we find a GitSwitch marker followed by matching Host
+      // Start skipping when we find a GitFlip marker followed by matching Host
       if (line.startsWith(MARKER_PREFIX)) {
         const nextLine = lines[i + 1];
         if (nextLine && nextLine.trim() === `Host ${hostAlias}`) {

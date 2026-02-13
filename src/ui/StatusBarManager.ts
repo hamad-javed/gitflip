@@ -9,7 +9,7 @@ export class StatusBarManager {
       vscode.StatusBarAlignment.Left,
       100
     );
-    this.statusBarItem.command = 'gitswitch.switchProfile';
+    this.statusBarItem.command = 'gitflip.switchProfile';
     this.update();
     this.statusBarItem.show();
 
@@ -21,7 +21,7 @@ export class StatusBarManager {
     if (active) {
       this.statusBarItem.text = `$(account) ${active.name}`;
       this.statusBarItem.tooltip = [
-        `GitSwitch: ${active.name}`,
+        `GitFlip: ${active.name}`,
         `Name: ${active.gitUserName}`,
         `Email: ${active.gitEmail}`,
         active.sshHost ? `SSH: ${active.sshHost}` : null,
@@ -30,7 +30,7 @@ export class StatusBarManager {
         .filter(Boolean)
         .join('\n');
     } else {
-      this.statusBarItem.text = '$(account) GitSwitch';
+      this.statusBarItem.text = '$(account) GitFlip';
       this.statusBarItem.tooltip = 'Click to switch GitHub profile';
     }
   }

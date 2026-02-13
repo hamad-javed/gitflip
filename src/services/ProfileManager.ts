@@ -2,8 +2,8 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import { Profile } from '../types';
 
-const PROFILES_KEY = 'gitswitch.profiles';
-const ACTIVE_PROFILE_KEY = 'gitswitch.activeProfileId';
+const PROFILES_KEY = 'gitflip.profiles';
+const ACTIVE_PROFILE_KEY = 'gitflip.activeProfileId';
 
 export class ProfileManager {
   private onDidChangeEmitter = new vscode.EventEmitter<void>();

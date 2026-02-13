@@ -6,26 +6,35 @@ export class ProfileTreeItem extends vscode.TreeItem {
   constructor(public readonly profile: Profile, isActive: boolean) {
     super(profile.name, vscode.TreeItemCollapsibleState.None);
 
-    this.description = `${profile.gitUserName} <${profile.gitEmail}>`;
-    this.iconPath = new vscode.ThemeIcon(isActive ? 'check' : 'account');
-    this.contextValue = 'profile';
+    // Build a concise description with auth badges
+    const badges: string[] = [];
+    if (profile.sshHost) { badges.push('SSH'); }
+    if (profile.useToken) { badges.push('Token'); }
+    const badgeStr = badges.length > 0 ? ` [${badges.join(', ')}]` : '';
+    this.description = `${profile.gitUserName} <${profile.gitEmail}>${badgeStr}`;
 
-    this.tooltip = [
-      `Name: ${profile.gitUserName}`,
-      `Email: ${profile.gitEmail}`,
-      profile.sshHost ? `SSH Host: ${profile.sshHost}` : null,
-      profile.sshKeyPath ? `SSH Key: ${profile.sshKeyPath}` : null,
-      profile.useToken ? `Token: configured` : null,
-      isActive ? '\n(Active)' : null,
-    ]
-      .filter(Boolean)
-      .join('\n');
+    this.iconPath = new vscode.ThemeIcon(
+      isActive ? 'pass-filled' : 'account',
+      isActive ? new vscode.ThemeColor('charts.green') : undefined
+    );
 
-    this.command = {
-      command: 'gitswitch.switchProfile',
-      title: 'Switch to this profile',
-      arguments: [profile.id],
-    };
+    // Distinguish active vs inactive for conditional inline actions
+    this.contextValue = isActive ? 'activeProfile' : 'profile';
+
+    this.tooltip = new vscode.MarkdownString(
+      [
+        `### ${profile.name}${isActive ? ' ✅ Active' : ''}`,
+        '',
+        `**User:** ${profile.gitUserName}`,
+        `**Email:** ${profile.gitEmail}`,
+        profile.sshHost ? `**SSH Host:** ${profile.sshHost}` : null,
+        profile.sshKeyPath ? `**SSH Key:** \`${profile.sshKeyPath}\`` : null,
+        profile.useToken ? `**Token:** configured` : null,
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
+      true
+    );
   }
 }
 

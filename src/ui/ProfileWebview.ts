@@ -12,6 +12,7 @@ interface WebviewSaveMessage {
     sshHost: string;
     token: string;
     useToken: boolean;
+    avatarUrl: string;
   };
 }
 
@@ -23,7 +24,11 @@ interface WebviewBrowseHostsMessage {
   command: 'browseSSHHosts';
 }
 
-type WebviewMessage = WebviewSaveMessage | WebviewBrowseMessage | WebviewBrowseHostsMessage;
+interface WebviewBrowseAvatarMessage {
+  command: 'browseAvatar';
+}
+
+type WebviewMessage = WebviewSaveMessage | WebviewBrowseMessage | WebviewBrowseHostsMessage | WebviewBrowseAvatarMessage;
 
 export class ProfileWebview {
   private panel: vscode.WebviewPanel | undefined;
@@ -39,7 +44,7 @@ export class ProfileWebview {
       this.panel.reveal();
     } else {
       this.panel = vscode.window.createWebviewPanel(
-        'gitswitchProfile',
+        'gitflipProfile',
         existingProfile ? `Edit Profile: ${existingProfile.name}` : 'Add Profile',
         vscode.ViewColumn.One,
         { enableScripts: true }
@@ -60,6 +65,8 @@ export class ProfileWebview {
         await this.handleBrowseSSHKeys();
       } else if (msg.command === 'browseSSHHosts') {
         await this.handleBrowseSSHHosts();
+      } else if (msg.command === 'browseAvatar') {
+        await this.handleBrowseAvatar();
       }
     });
   }
@@ -157,6 +164,35 @@ export class ProfileWebview {
       this.panel?.webview.postMessage({
         command: 'setSSHHost',
         host: picked.host,
+      });
+    }
+  }
+
+  private async handleBrowseAvatar(): Promise<void> {
+    const uris = await vscode.window.showOpenDialog({
+      title: 'Select Profile Avatar',
+      canSelectMany: false,
+      openLabel: 'Select Image',
+      filters: {
+        'Images': ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'],
+      },
+    });
+    if (uris?.[0]) {
+      const fs = require('fs') as typeof import('fs');
+      const path = require('path') as typeof import('path');
+      const filePath = uris[0].fsPath;
+      const ext = path.extname(filePath).toLowerCase().replace('.', '');
+      const mimeMap: Record<string, string> = {
+        png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+        gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp',
+      };
+      const mime = mimeMap[ext] || 'image/png';
+      const data = fs.readFileSync(filePath);
+      const base64 = data.toString('base64');
+      const dataUri = `data:${mime};base64,${base64}`;
+      this.panel?.webview.postMessage({
+        command: 'setAvatar',
+        url: dataUri,
       });
     }
   }
@@ -262,10 +298,96 @@ export class ProfileWebview {
     .browse-btn:hover {
       background: var(--vscode-button-secondaryHoverBackground);
     }
+    .avatar-section {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .avatar-preview {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      background: var(--vscode-input-background);
+      border: 2px solid var(--vscode-input-border, var(--vscode-widget-border, #444));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .avatar-preview img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .avatar-placeholder {
+      font-size: 28px;
+      color: var(--vscode-descriptionForeground);
+      opacity: 0.5;
+    }
+    .avatar-controls {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .avatar-controls label {
+      margin-bottom: 0;
+      font-weight: 500;
+    }
+    .avatar-btns {
+      display: flex;
+      gap: 6px;
+    }
+    .avatar-btns button {
+      padding: 4px 10px;
+      font-size: 12px;
+      margin-top: 0;
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+    }
+    .avatar-btns button:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
+    .avatar-url-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-top: 4px;
+    }
+    .avatar-url-row input {
+      flex: 1;
+      padding: 4px 8px;
+      font-size: 12px;
+    }
+    .avatar-btns .remove-btn {
+      color: var(--vscode-errorForeground);
+    }
   </style>
 </head>
 <body>
   <h2>${profile ? 'Edit' : 'New'} GitHub Profile</h2>
+
+  <div class="avatar-section">
+    <div class="avatar-preview" id="avatarPreview">
+      ${profile?.avatarUrl
+        ? `<img src="${profile.avatarUrl}" alt="avatar" />`
+        : '<span class="avatar-placeholder">&#x1F464;</span>'}
+    </div>
+    <div class="avatar-controls">
+      <label>Profile Avatar</label>
+      <div class="avatar-btns">
+        <button type="button" id="browseAvatarBtn">Upload Image</button>
+        <button type="button" id="toggleUrlBtn">Paste URL</button>
+        <button type="button" class="remove-btn" id="removeAvatarBtn">Remove</button>
+      </div>
+      <div class="avatar-url-row" id="avatarUrlRow" style="display:none;">
+        <input type="text" id="avatarUrlInput" placeholder="https://github.com/username.png" value="${profile?.avatarUrl && !profile.avatarUrl.startsWith('data:') ? profile.avatarUrl : ''}" />
+        <button type="button" class="browse-btn" id="applyUrlBtn" style="padding:4px 10px;font-size:12px;margin-top:0;">Apply</button>
+      </div>
+    </div>
+  </div>
+  <input type="hidden" id="avatarUrl" value="${profile?.avatarUrl ?? ''}" />
 
   <div class="form-group">
     <label for="name">Profile Name</label>
@@ -326,6 +448,18 @@ export class ProfileWebview {
   <script>
     const vscode = acquireVsCodeApi();
 
+    function updateAvatarPreview(url) {
+      const preview = document.getElementById('avatarPreview');
+      const hidden = document.getElementById('avatarUrl');
+      if (url) {
+        preview.innerHTML = '<img src="' + url + '" alt="avatar" />';
+        hidden.value = url;
+      } else {
+        preview.innerHTML = '<span class="avatar-placeholder">&#x1F464;</span>';
+        hidden.value = '';
+      }
+    }
+
     // Listen for messages from the extension (browse results)
     window.addEventListener('message', (event) => {
       const msg = event.data;
@@ -333,7 +467,31 @@ export class ProfileWebview {
         document.getElementById('sshKeyPath').value = msg.path;
       } else if (msg.command === 'setSSHHost') {
         document.getElementById('sshHost').value = msg.host;
+      } else if (msg.command === 'setAvatar') {
+        updateAvatarPreview(msg.url);
       }
+    });
+
+    document.getElementById('browseAvatarBtn').addEventListener('click', () => {
+      vscode.postMessage({ command: 'browseAvatar' });
+    });
+
+    document.getElementById('toggleUrlBtn').addEventListener('click', () => {
+      const row = document.getElementById('avatarUrlRow');
+      row.style.display = row.style.display === 'none' ? 'flex' : 'none';
+    });
+
+    document.getElementById('applyUrlBtn').addEventListener('click', () => {
+      const url = document.getElementById('avatarUrlInput').value.trim();
+      if (url) {
+        updateAvatarPreview(url);
+        document.getElementById('avatarUrlRow').style.display = 'none';
+      }
+    });
+
+    document.getElementById('removeAvatarBtn').addEventListener('click', () => {
+      updateAvatarPreview('');
+      document.getElementById('avatarUrlInput').value = '';
     });
 
     document.getElementById('browseKeysBtn').addEventListener('click', () => {
@@ -367,6 +525,7 @@ export class ProfileWebview {
           sshHost: document.getElementById('sshHost').value.trim(),
           useToken: document.getElementById('useToken').checked,
           token: document.getElementById('token').value.trim(),
+          avatarUrl: document.getElementById('avatarUrl').value,
         }
       });
     });

@@ -6,6 +6,7 @@ export interface Profile {
   sshKeyPath?: string;
   sshHost?: string;
   useToken?: boolean;
+  avatarUrl?: string; // URL or data URI for profile avatar
 }
 
 export type GitConfigScope = 'local' | 'global';

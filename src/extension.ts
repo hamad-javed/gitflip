@@ -4,9 +4,9 @@ import { GitConfigService } from './services/GitConfigService';
 import { SSHConfigService } from './services/SSHConfigService';
 import { TokenManager } from './services/TokenManager';
 import { StatusBarManager } from './ui/StatusBarManager';
-import { ProfileTreeViewProvider } from './ui/ProfileTreeView';
+import { ProfileSidebarViewProvider } from './ui/ProfileSidebarView';
 import { ProfileWebview } from './ui/ProfileWebview';
-import { GitConfigScope } from './types';
+import { GitConfigScope, Profile } from './types';
 
 export function activate(context: vscode.ExtensionContext) {
   const profileManager = new ProfileManager(context);
@@ -14,11 +14,12 @@ export function activate(context: vscode.ExtensionContext) {
   const sshConfig = new SSHConfigService();
   const tokenManager = new TokenManager(context);
   const statusBar = new StatusBarManager(profileManager);
-  const treeProvider = new ProfileTreeViewProvider(profileManager);
+  const sidebarProvider = new ProfileSidebarViewProvider(context.extensionUri, profileManager);
 
-  const treeView = vscode.window.createTreeView('gitswitchProfiles', {
-    treeDataProvider: treeProvider,
-  });
+  const sidebarView = vscode.window.registerWebviewViewProvider(
+    ProfileSidebarViewProvider.viewType,
+    sidebarProvider
+  );
 
   // --- Webview helper ---
   const webview = new ProfileWebview(
@@ -33,6 +34,7 @@ export function activate(context: vscode.ExtensionContext) {
           sshKeyPath: data.sshKeyPath || undefined,
           sshHost: data.sshHost || undefined,
           useToken: data.useToken,
+          avatarUrl: data.avatarUrl || undefined,
         });
 
         if (data.useToken && data.token) {
@@ -55,6 +57,7 @@ export function activate(context: vscode.ExtensionContext) {
           sshKeyPath: data.sshKeyPath || undefined,
           sshHost: data.sshHost || undefined,
           useToken: data.useToken,
+          avatarUrl: data.avatarUrl || undefined,
         });
 
         if (data.useToken && data.token) {
@@ -72,15 +75,16 @@ export function activate(context: vscode.ExtensionContext) {
 
   // --- Commands ---
 
-  const addProfileCmd = vscode.commands.registerCommand('gitswitch.addProfile', () => {
+  const addProfileCmd = vscode.commands.registerCommand('gitflip.addProfile', () => {
     webview.show();
   });
 
-  const editProfileCmd = vscode.commands.registerCommand('gitswitch.editProfile', async (arg?: unknown) => {
+  const editProfileCmd = vscode.commands.registerCommand('gitflip.editProfile', async (arg?: unknown) => {
     let profileId: string | undefined;
 
-    // Called from tree view context menu
-    if (arg && typeof arg === 'object' && 'profile' in (arg as Record<string, unknown>)) {
+    if (typeof arg === 'string') {
+      profileId = arg;
+    } else if (arg && typeof arg === 'object' && 'profile' in (arg as Record<string, unknown>)) {
       profileId = ((arg as Record<string, unknown>).profile as { id: string }).id;
     }
 
@@ -110,10 +114,12 @@ export function activate(context: vscode.ExtensionContext) {
     webview.show(profile, existingToken);
   });
 
-  const removeProfileCmd = vscode.commands.registerCommand('gitswitch.removeProfile', async (arg?: unknown) => {
+  const removeProfileCmd = vscode.commands.registerCommand('gitflip.removeProfile', async (arg?: unknown) => {
     let profileId: string | undefined;
 
-    if (arg && typeof arg === 'object' && 'profile' in (arg as Record<string, unknown>)) {
+    if (typeof arg === 'string') {
+      profileId = arg;
+    } else if (arg && typeof arg === 'object' && 'profile' in (arg as Record<string, unknown>)) {
       profileId = ((arg as Record<string, unknown>).profile as { id: string }).id;
     }
 
@@ -155,8 +161,14 @@ export function activate(context: vscode.ExtensionContext) {
     }
   });
 
-  const switchProfileCmd = vscode.commands.registerCommand('gitswitch.switchProfile', async (directId?: string) => {
-    let profileId: string | undefined = typeof directId === 'string' ? directId : undefined;
+  const switchProfileCmd = vscode.commands.registerCommand('gitflip.switchProfile', async (arg?: unknown) => {
+    let profileId: string | undefined;
+
+    if (typeof arg === 'string') {
+      profileId = arg;
+    } else if (arg && typeof arg === 'object' && 'profile' in (arg as Record<string, unknown>)) {
+      profileId = ((arg as Record<string, unknown>).profile as { id: string }).id;
+    }
 
     if (!profileId) {
       const profiles = profileManager.getProfiles();
@@ -166,7 +178,7 @@ export function activate(context: vscode.ExtensionContext) {
           'Add Profile'
         );
         if (action === 'Add Profile') {
-          vscode.commands.executeCommand('gitswitch.addProfile');
+          vscode.commands.executeCommand('gitflip.addProfile');
         }
         return;
       }
@@ -192,7 +204,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     // Ask for scope
-    const config = vscode.workspace.getConfiguration('gitswitch');
+    const config = vscode.workspace.getConfiguration('gitflip');
     const defaultScope = config.get<string>('defaultScope', 'local');
     let scope: GitConfigScope;
 
@@ -239,10 +251,51 @@ export function activate(context: vscode.ExtensionContext) {
     );
   });
 
-  const showCurrentProfileCmd = vscode.commands.registerCommand('gitswitch.showCurrentProfile', () => {
+  const duplicateProfileCmd = vscode.commands.registerCommand('gitflip.duplicateProfile', async (arg?: unknown) => {
+    let profileId: string | undefined;
+
+    if (typeof arg === 'string') {
+      profileId = arg;
+    } else if (arg && typeof arg === 'object' && 'profile' in (arg as Record<string, unknown>)) {
+      profileId = ((arg as Record<string, unknown>).profile as { id: string }).id;
+    }
+
+    if (!profileId) {
+      const profiles = profileManager.getProfiles();
+      if (profiles.length === 0) {
+        vscode.window.showInformationMessage('No profiles to duplicate.');
+        return;
+      }
+
+      const picked = await vscode.window.showQuickPick(
+        profiles.map(p => ({ label: p.name, description: `${p.gitUserName} <${p.gitEmail}>`, id: p.id })),
+        { placeHolder: 'Select a profile to duplicate' }
+      );
+      if (!picked) {
+        return;
+      }
+      profileId = picked.id;
+    }
+
+    const profile = profileManager.getProfile(profileId);
+    if (!profile) {
+      return;
+    }
+
+    // Open the webview pre-filled with the source profile's data but as a new profile
+    const sourceToken = profile.useToken ? await tokenManager.getToken(profileId) : undefined;
+    const duplicate: Profile = {
+      ...profile,
+      id: '', // will be ignored — show() without existingId triggers addProfile
+      name: `${profile.name} (Copy)`,
+    };
+    webview.show(duplicate, sourceToken ?? undefined);
+  });
+
+  const showCurrentProfileCmd = vscode.commands.registerCommand('gitflip.showCurrentProfile', () => {
     const active = profileManager.getActiveProfile();
     if (!active) {
-      vscode.window.showInformationMessage('No active GitSwitch profile.');
+      vscode.window.showInformationMessage('No active GitFlip profile.');
       return;
     }
 
@@ -266,10 +319,11 @@ export function activate(context: vscode.ExtensionContext) {
     editProfileCmd,
     removeProfileCmd,
     switchProfileCmd,
+    duplicateProfileCmd,
     showCurrentProfileCmd,
-    treeView,
+    sidebarView,
     statusBar,
-    treeProvider,
+    sidebarProvider,
     profileManager,
     webview,
   );

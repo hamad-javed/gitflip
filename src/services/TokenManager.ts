@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-const TOKEN_PREFIX = 'gitswitch.token.';
+const TOKEN_PREFIX = 'gitflip.token.';
 
 export class TokenManager {
   constructor(private context: vscode.ExtensionContext) {}

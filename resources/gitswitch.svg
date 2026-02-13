@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+  <!-- User head -->
+  <circle cx="8" cy="6" r="3"/>
+  <!-- User body -->
+  <path d="M2 18.5c0-3 2.5-5.5 6-5.5s6 2.5 6 5.5z"/>
+  <!-- Switch arrow right -->
+  <path d="M16.5 6.5h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/>
+  <path d="M19 4.5l2 2-2 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Switch arrow left -->
+  <path d="M20.5 12.5h-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/>
+  <path d="M18 10.5l-2 2 2 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Three dots -->
+  <circle cx="9" cy="22" r="1"/>
+  <circle cx="12.5" cy="22" r="1"/>
+  <circle cx="16" cy="22" r="1"/>
+</svg>

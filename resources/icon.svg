@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2d7ff9"/>
+      <stop offset="100%" style="stop-color:#6c5ce7"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background rounded square -->
+  <rect width="128" height="128" rx="24" fill="url(#bg)"/>
+
+  <!-- User icon (head) -->
+  <circle cx="52" cy="42" r="14" fill="none" stroke="white" stroke-width="4" stroke-linecap="round"/>
+  <!-- User icon (body) -->
+  <path d="M28 82 C28 66 76 66 76 82" fill="none" stroke="white" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- Switch arrows -->
+  <path d="M82 38 L98 38" stroke="white" stroke-width="4" stroke-linecap="round"/>
+  <path d="M92 30 L100 38 L92 46" fill="none" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <path d="M98 68 L82 68" stroke="white" stroke-width="4" stroke-linecap="round"/>
+  <path d="M88 60 L80 68 L88 76" fill="none" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Small dot indicators -->
+  <circle cx="52" cy="100" r="4" fill="rgba(255,255,255,0.5)"/>
+  <circle cx="68" cy="100" r="4" fill="white"/>
+  <circle cx="84" cy="100" r="4" fill="rgba(255,255,255,0.5)"/>
+</svg>

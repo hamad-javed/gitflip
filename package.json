@@ -1,6 +1,6 @@
 {
-  "name": "gitswitch",
-  "displayName": "GitSwitch",
+  "name": "gitflip",
+  "displayName": "GitFlip",
   "description": "Manage and switch between multiple GitHub accounts efficiently - git config, SSH keys, and tokens",
   "version": "0.1.0",
   "publisher": "hamad-javed",

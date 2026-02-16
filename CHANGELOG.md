@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- **Auth method selector** — Choose between HTTPS (PAT), SSH, or Git Config Only when creating or editing a profile
+- **HTTPS mode** — Manage accounts using just a Personal Access Token with git credential helpers. No SSH setup required
+- **Git Config Only mode** — Switch user.name and email without any authentication configuration
+- **Credential helper integration** — Automatically configures git credentials via `git credential approve/reject`
+- **Auto remote URL conversion** — Converts remote URLs between SSH and HTTPS formats when switching profiles
+- **Backward compatible** — Existing profiles are automatically detected as SSH, HTTPS, or config-only based on their settings
+- **Updated sidebar badges** — Auth badges now show "SSH" or "HTTPS" instead of "SSH" and "Token"
+
 ## 0.2.0
 
 - **Rebranded** from GitSwitch to GitFlip across the entire extension

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { Profile } from '../types';
+import { Profile, resolveAuthMethod } from '../types';
 import { SSHConfigService } from '../services/SSHConfigService';
 
 interface WebviewSaveMessage {
@@ -8,6 +8,7 @@ interface WebviewSaveMessage {
     name: string;
     gitUserName: string;
     gitEmail: string;
+    authMethod: string;
     sshKeyPath: string;
     sshHost: string;
     token: string;
@@ -198,6 +199,7 @@ export class ProfileWebview {
   }
 
   private getHtml(profile?: Profile, token?: string): string {
+    const authMethod = profile ? resolveAuthMethod(profile) : 'none';
     return /* html */ `
 <!DOCTYPE html>
 <html lang="en">
@@ -363,6 +365,40 @@ export class ProfileWebview {
     .avatar-btns .remove-btn {
       color: var(--vscode-errorForeground);
     }
+    .auth-method-selector {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .auth-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--vscode-input-border, transparent);
+      border-radius: 4px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .auth-option:hover {
+      border-color: var(--vscode-focusBorder);
+    }
+    .auth-option.selected {
+      border-color: var(--vscode-focusBorder);
+      background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.04));
+    }
+    .auth-option input[type="radio"] {
+      margin-top: 3px;
+      flex-shrink: 0;
+    }
+    .auth-option-content {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .auth-option-content strong {
+      font-size: 13px;
+    }
   </style>
 </head>
 <body>
@@ -409,38 +445,62 @@ export class ProfileWebview {
   </div>
 
   <div class="separator"></div>
-  <div class="section-title">SSH Configuration (Optional)</div>
+  <div class="section-title">Authentication Method</div>
 
   <div class="form-group">
-    <label for="sshKeyPath">SSH Private Key Path</label>
-    <div class="hint">Full path to your SSH key, or click "Browse" to discover keys in ~/.ssh/</div>
-    <div class="input-row">
-      <input type="text" id="sshKeyPath" value="${profile?.sshKeyPath ?? ''}" placeholder="~/.ssh/id_ed25519" />
-      <button class="browse-btn" id="browseKeysBtn" type="button">Browse Keys</button>
+    <div class="auth-method-selector">
+      <label class="auth-option ${authMethod === 'none' ? 'selected' : ''}">
+        <input type="radio" name="authMethod" value="none" ${authMethod === 'none' ? 'checked' : ''} />
+        <div class="auth-option-content">
+          <strong>Git Config Only</strong>
+          <span class="hint">Just set user.name and email. No authentication setup.</span>
+        </div>
+      </label>
+      <label class="auth-option ${authMethod === 'https' ? 'selected' : ''}">
+        <input type="radio" name="authMethod" value="https" ${authMethod === 'https' ? 'checked' : ''} />
+        <div class="auth-option-content">
+          <strong>HTTPS (Personal Access Token)</strong>
+          <span class="hint">Use a GitHub PAT for authentication. Easiest for beginners.</span>
+        </div>
+      </label>
+      <label class="auth-option ${authMethod === 'ssh' ? 'selected' : ''}">
+        <input type="radio" name="authMethod" value="ssh" ${authMethod === 'ssh' ? 'checked' : ''} />
+        <div class="auth-option-content">
+          <strong>SSH Key</strong>
+          <span class="hint">Use an SSH key for authentication. Best for advanced users.</span>
+        </div>
+      </label>
     </div>
   </div>
 
-  <div class="form-group">
-    <label for="sshHost">SSH Host Alias</label>
-    <div class="hint">A unique alias, or click "Browse" to pick from existing ~/.ssh/config hosts</div>
-    <div class="input-row">
-      <input type="text" id="sshHost" value="${profile?.sshHost ?? ''}" placeholder="e.g. github-personal" />
-      <button class="browse-btn" id="browseHostsBtn" type="button">Browse Hosts</button>
+  <!-- HTTPS fields -->
+  <div id="httpsFields" style="display: ${authMethod === 'https' ? 'block' : 'none'}">
+    <div class="form-group">
+      <label for="token">GitHub Personal Access Token</label>
+      <div class="hint">Stored securely in VS Code's secret storage. Used via git credential helper.</div>
+      <input type="password" id="token" value="${token ?? ''}" placeholder="ghp_..." />
     </div>
   </div>
 
-  <div class="separator"></div>
-  <div class="section-title">Token Configuration (Optional)</div>
+  <!-- SSH fields -->
+  <div id="sshFields" style="display: ${authMethod === 'ssh' ? 'block' : 'none'}">
+    <div class="form-group">
+      <label for="sshKeyPath">SSH Private Key Path</label>
+      <div class="hint">Full path to your SSH key, or click "Browse" to discover keys in ~/.ssh/</div>
+      <div class="input-row">
+        <input type="text" id="sshKeyPath" value="${profile?.sshKeyPath ?? ''}" placeholder="~/.ssh/id_ed25519" />
+        <button class="browse-btn" id="browseKeysBtn" type="button">Browse Keys</button>
+      </div>
+    </div>
 
-  <div class="form-group checkbox-group">
-    <input type="checkbox" id="useToken" ${profile?.useToken ? 'checked' : ''} />
-    <label for="useToken">Use Personal Access Token</label>
-  </div>
-
-  <div class="form-group" id="tokenGroup" style="display: ${profile?.useToken ? 'block' : 'none'}">
-    <label for="token">GitHub Personal Access Token</label>
-    <div class="hint">Stored securely in VS Code's secret storage</div>
-    <input type="password" id="token" value="${token ?? ''}" placeholder="ghp_..." />
+    <div class="form-group">
+      <label for="sshHost">SSH Host Alias</label>
+      <div class="hint">A unique alias, or click "Browse" to pick from existing ~/.ssh/config hosts</div>
+      <div class="input-row">
+        <input type="text" id="sshHost" value="${profile?.sshHost ?? ''}" placeholder="e.g. github-personal" />
+        <button class="browse-btn" id="browseHostsBtn" type="button">Browse Hosts</button>
+      </div>
+    </div>
   </div>
 
   <button id="saveBtn">${profile ? 'Save Changes' : 'Create Profile'}</button>
@@ -494,16 +554,24 @@ export class ProfileWebview {
       document.getElementById('avatarUrlInput').value = '';
     });
 
+    // Auth method radio buttons
+    document.querySelectorAll('input[name="authMethod"]').forEach(function(radio) {
+      radio.addEventListener('change', function(e) {
+        var method = e.target.value;
+        document.getElementById('sshFields').style.display = method === 'ssh' ? 'block' : 'none';
+        document.getElementById('httpsFields').style.display = method === 'https' ? 'block' : 'none';
+        // Update selected styling
+        document.querySelectorAll('.auth-option').forEach(function(opt) { opt.classList.remove('selected'); });
+        e.target.closest('.auth-option').classList.add('selected');
+      });
+    });
+
     document.getElementById('browseKeysBtn').addEventListener('click', () => {
       vscode.postMessage({ command: 'browseSSHKeys' });
     });
 
     document.getElementById('browseHostsBtn').addEventListener('click', () => {
       vscode.postMessage({ command: 'browseSSHHosts' });
-    });
-
-    document.getElementById('useToken').addEventListener('change', (e) => {
-      document.getElementById('tokenGroup').style.display = e.target.checked ? 'block' : 'none';
     });
 
     document.getElementById('saveBtn').addEventListener('click', () => {
@@ -515,15 +583,18 @@ export class ProfileWebview {
         return;
       }
 
+      const authMethod = document.querySelector('input[name="authMethod"]:checked').value;
+
       vscode.postMessage({
         command: 'save',
         data: {
           name,
           gitUserName,
           gitEmail,
+          authMethod,
           sshKeyPath: document.getElementById('sshKeyPath').value.trim(),
           sshHost: document.getElementById('sshHost').value.trim(),
-          useToken: document.getElementById('useToken').checked,
+          useToken: authMethod === 'https',
           token: document.getElementById('token').value.trim(),
           avatarUrl: document.getElementById('avatarUrl').value,
         }

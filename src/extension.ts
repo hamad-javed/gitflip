@@ -2,16 +2,18 @@ import * as vscode from 'vscode';
 import { ProfileManager } from './services/ProfileManager';
 import { GitConfigService } from './services/GitConfigService';
 import { SSHConfigService } from './services/SSHConfigService';
+import { CredentialHelperService } from './services/CredentialHelperService';
 import { TokenManager } from './services/TokenManager';
 import { StatusBarManager } from './ui/StatusBarManager';
 import { ProfileSidebarViewProvider } from './ui/ProfileSidebarView';
 import { ProfileWebview } from './ui/ProfileWebview';
-import { GitConfigScope, Profile } from './types';
+import { GitConfigScope, Profile, AuthMethod, resolveAuthMethod } from './types';
 
 export function activate(context: vscode.ExtensionContext) {
   const profileManager = new ProfileManager(context);
   const gitConfig = new GitConfigService();
   const sshConfig = new SSHConfigService();
+  const credentialHelper = new CredentialHelperService();
   const tokenManager = new TokenManager(context);
   const statusBar = new StatusBarManager(profileManager);
   const sidebarProvider = new ProfileSidebarViewProvider(context.extensionUri, profileManager);
@@ -26,45 +28,41 @@ export function activate(context: vscode.ExtensionContext) {
     context.extensionUri,
     sshConfig,
     async (data, existingId) => {
-      if (existingId) {
-        await profileManager.updateProfile(existingId, {
-          name: data.name,
-          gitUserName: data.gitUserName,
-          gitEmail: data.gitEmail,
-          sshKeyPath: data.sshKeyPath || undefined,
-          sshHost: data.sshHost || undefined,
-          useToken: data.useToken,
-          avatarUrl: data.avatarUrl || undefined,
-        });
+      const method = (data.authMethod || 'none') as AuthMethod;
+      const profileData = {
+        name: data.name,
+        gitUserName: data.gitUserName,
+        gitEmail: data.gitEmail,
+        authMethod: method,
+        sshKeyPath: method === 'ssh' ? (data.sshKeyPath || undefined) : undefined,
+        sshHost: method === 'ssh' ? (data.sshHost || undefined) : undefined,
+        useToken: method === 'https',
+        avatarUrl: data.avatarUrl || undefined,
+      };
 
-        if (data.useToken && data.token) {
+      if (existingId) {
+        await profileManager.updateProfile(existingId, profileData);
+
+        if (method === 'https' && data.token) {
           await tokenManager.storeToken(existingId, data.token);
-        } else if (!data.useToken) {
+        } else if (method !== 'https') {
           await tokenManager.deleteToken(existingId);
         }
 
         const profile = profileManager.getProfile(existingId);
-        if (profile?.sshKeyPath && profile?.sshHost) {
+        if (profile && method === 'ssh' && profile.sshKeyPath && profile.sshHost) {
           sshConfig.addHostEntry(profile);
         }
 
         vscode.window.showInformationMessage(`Profile "${data.name}" updated.`);
       } else {
-        const profile = await profileManager.addProfile({
-          name: data.name,
-          gitUserName: data.gitUserName,
-          gitEmail: data.gitEmail,
-          sshKeyPath: data.sshKeyPath || undefined,
-          sshHost: data.sshHost || undefined,
-          useToken: data.useToken,
-          avatarUrl: data.avatarUrl || undefined,
-        });
+        const profile = await profileManager.addProfile(profileData);
 
-        if (data.useToken && data.token) {
+        if (method === 'https' && data.token) {
           await tokenManager.storeToken(profile.id, data.token);
         }
 
-        if (profile.sshKeyPath && profile.sshHost) {
+        if (method === 'ssh' && profile.sshKeyPath && profile.sshHost) {
           sshConfig.addHostEntry(profile);
         }
 
@@ -110,7 +108,8 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
 
-    const existingToken = profile.useToken ? await tokenManager.getToken(profileId) : undefined;
+    const method = resolveAuthMethod(profile);
+    const existingToken = method === 'https' ? await tokenManager.getToken(profileId) : undefined;
     webview.show(profile, existingToken);
   });
 
@@ -152,8 +151,12 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     if (confirm === 'Remove') {
-      if (profile.sshHost) {
+      const method = resolveAuthMethod(profile);
+      if (method === 'ssh' && profile.sshHost) {
         sshConfig.removeHostEntry(profile.sshHost);
+      }
+      if (method === 'https') {
+        credentialHelper.rejectCredentials('github.com');
       }
       await tokenManager.deleteToken(profileId);
       await profileManager.removeProfile(profileId);
@@ -237,10 +240,27 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
 
-    // Update remote URL if SSH is configured
+    // Auth-method-specific actions
     const autoSwitch = config.get<boolean>('autoSwitchRemote', true);
-    if (autoSwitch && profile.sshHost && scope === 'local') {
-      sshConfig.updateRemoteUrl(profile);
+    const method = resolveAuthMethod(profile);
+
+    if (method === 'ssh') {
+      if (autoSwitch && profile.sshHost && scope === 'local') {
+        sshConfig.updateRemoteUrl(profile);
+      }
+    } else if (method === 'https') {
+      const token = await tokenManager.getToken(profileId);
+      if (token) {
+        credentialHelper.ensureCredentialHelper();
+        credentialHelper.setCredentials('github.com', profile.gitUserName, token);
+      } else {
+        vscode.window.showWarningMessage(
+          `No token configured for "${profile.name}". Push/pull may require authentication.`
+        );
+      }
+      if (autoSwitch && scope === 'local') {
+        credentialHelper.convertRemoteToHttps();
+      }
     }
 
     // Set active profile
@@ -283,7 +303,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     // Open the webview pre-filled with the source profile's data but as a new profile
-    const sourceToken = profile.useToken ? await tokenManager.getToken(profileId) : undefined;
+    const sourceToken = resolveAuthMethod(profile) === 'https' ? await tokenManager.getToken(profileId) : undefined;
     const duplicate: Profile = {
       ...profile,
       id: '', // will be ignored — show() without existingId triggers addProfile
@@ -299,13 +319,15 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
 
+    const method = resolveAuthMethod(active);
     const details = [
       `Profile: ${active.name}`,
       `Git User: ${active.gitUserName}`,
       `Git Email: ${active.gitEmail}`,
-      active.sshHost ? `SSH Host: ${active.sshHost}` : null,
-      active.sshKeyPath ? `SSH Key: ${active.sshKeyPath}` : null,
-      active.useToken ? `Token: configured` : null,
+      method === 'ssh' && active.sshHost ? `SSH Host: ${active.sshHost}` : null,
+      method === 'ssh' && active.sshKeyPath ? `SSH Key: ${active.sshKeyPath}` : null,
+      method === 'https' ? `Auth: HTTPS (Token)` : null,
+      method === 'none' ? `Auth: Git Config Only` : null,
     ]
       .filter(Boolean)
       .join('  |  ');

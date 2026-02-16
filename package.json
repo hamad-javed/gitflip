@@ -1,8 +1,8 @@
 {
   "name": "gitflip",
   "displayName": "GitFlip",
-  "description": "Manage and switch between multiple GitHub accounts efficiently - git config, SSH keys, and tokens",
-  "version": "0.2.0",
+  "description": "Manage and switch between multiple GitHub accounts — HTTPS, SSH, or git config only. No SSH setup required.",
+  "version": "0.3.0",
   "publisher": "hamad-javed",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -23,8 +23,11 @@
     "account",
     "switch",
     "ssh",
+    "https",
     "profile",
-    "multi-account"
+    "multi-account",
+    "credential",
+    "token"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -105,7 +108,7 @@
         "gitflip.autoSwitchRemote": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically update remote URL to use the correct SSH host alias when switching profiles"
+          "description": "Automatically update remote URL format (SSH host alias or HTTPS) when switching profiles"
         }
       }
     }

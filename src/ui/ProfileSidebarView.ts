@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { Profile } from '../types';
+import { Profile, resolveAuthMethod } from '../types';
 import { ProfileManager } from '../services/ProfileManager';
 
 export class ProfileSidebarViewProvider implements vscode.WebviewViewProvider {
@@ -69,8 +69,9 @@ export class ProfileSidebarViewProvider implements vscode.WebviewViewProvider {
     const profileCards = profiles.map(p => {
       const isActive = p.id === activeId;
       const badges: string[] = [];
-      if (p.sshHost) { badges.push('SSH'); }
-      if (p.useToken) { badges.push('Token'); }
+      const method = resolveAuthMethod(p);
+      if (method === 'ssh') { badges.push('SSH'); }
+      else if (method === 'https') { badges.push('HTTPS'); }
 
       const avatarHtml = p.avatarUrl
         ? `<img class="avatar-img" src="${this.escapeHtml(p.avatarUrl)}" alt="" />`

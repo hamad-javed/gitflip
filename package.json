@@ -2,7 +2,7 @@
   "name": "gitflip",
   "displayName": "GitFlip",
   "description": "Manage and switch between multiple GitHub accounts — HTTPS, SSH, or git config only. No SSH setup required.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "hamad-javed",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -109,6 +109,11 @@
             "global"
           ],
           "description": "Default scope when switching git config (local = current repo, global = all repos)"
+        },
+        "gitflip.alwaysUseDefaultScope": {
+          "type": "boolean",
+          "default": false,
+          "description": "Skip the scope prompt when switching inside a repository and always apply the configured defaultScope. Avoids accidentally writing to global and shadowing local config."
         },
         "gitflip.autoSwitchRemote": {
           "type": "boolean",

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0
+
+Predictable switching scope.
+
+- **`GitFlip: Always use default scope` setting** — New `gitflip.alwaysUseDefaultScope` option. When enabled, switching a profile inside a repository applies the configured `defaultScope` directly instead of prompting "This Repository vs Global" each time. This prevents accidentally writing identity to the global config, where a pre-existing local override would silently shadow it — the cause of "I switched but `git config` didn't change". Defaults to `false`, preserving the prompt for existing users
+
 ## 0.5.0
 
 Feedback, drift detection, and a test suite.

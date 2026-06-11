@@ -240,9 +240,13 @@ export function activate(context: vscode.ExtensionContext) {
     const repoRoot = GitUtil.resolveRepoRoot();
 
     // Decide scope. Local requires a real git repository.
+    const alwaysUseDefault = config.get<boolean>('alwaysUseDefaultScope', false);
     let scope: GitConfigScope;
     if (!repoRoot) {
       scope = 'global';
+    } else if (alwaysUseDefault) {
+      // Honor defaultScope without prompting; never silently fall back to global.
+      scope = defaultScope;
     } else {
       const scopePick = await vscode.window.showQuickPick(
         [

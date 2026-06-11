@@ -69,6 +69,7 @@ Just switches `user.name` and `user.email` — no authentication setup. Useful w
 | Setting | Default | Description |
 |---|---|---|
 | `gitflip.defaultScope` | `local` | Default git config scope (`local` or `global`) |
+| `gitflip.alwaysUseDefaultScope` | `false` | Skip the scope prompt inside a repo and always apply `defaultScope` (avoids accidentally writing to global and shadowing local config) |
 | `gitflip.autoSwitchRemote` | `true` | Auto-update remote URL format (SSH host alias or HTTPS) when switching profiles |
 
 ## Sidebar

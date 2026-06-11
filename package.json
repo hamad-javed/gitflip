@@ -2,7 +2,7 @@
   "name": "gitflip",
   "displayName": "GitFlip",
   "description": "Manage and switch between multiple GitHub accounts — HTTPS, SSH, or git config only. No SSH setup required.",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "publisher": "hamad-javed",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -64,6 +64,11 @@
         "command": "gitflip.duplicateProfile",
         "title": "GitFlip: Duplicate Profile",
         "icon": "$(copy)"
+      },
+      {
+        "command": "gitflip.checkRepo",
+        "title": "GitFlip: Check Current Repository",
+        "icon": "$(search)"
       }
     ],
     "viewsContainers": {
@@ -114,11 +119,13 @@
     }
   },
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
-    "package": "vsce package",
-    "publish": "vsce publish",
-    "lint": "eslint src --ext ts"
+    "test": "node esbuild.test.js",
+    "vscode:prepublish": "npm run typecheck && node esbuild.js",
+    "package": "npm run typecheck && vsce package",
+    "publish": "npm run typecheck && vsce publish"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

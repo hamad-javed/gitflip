@@ -1,111 +1,102 @@
-import { execSync } from 'child_process';
-import * as vscode from 'vscode';
+import { GitUtil } from './GitUtil';
+import { parseGitHubRemote } from './githubRemote';
 
+// Re-exported for callers that imported it from here historically.
+export { parseGitHubRemote };
+
+/**
+ * Manages HTTPS authentication for a repository.
+ *
+ * Strategy: instead of relying on a global credential store (which keys
+ * credentials by host only and therefore cannot keep two GitHub accounts
+ * working at once), GitFlip writes the username into the repository's `origin`
+ * remote URL and enables `credential.useHttpPath`. Combined with a per-repo
+ * credential entry keyed by username, this lets each repository authenticate
+ * as a distinct account without clobbering global credentials.
+ */
 export class CredentialHelperService {
-
-  private getWorkspacePath(): string | undefined {
-    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  }
-
   /**
-   * Ensure a git credential helper is configured.
-   * If none is found (local or global), set 'store' as a global fallback.
+   * Ensure a credential helper is available so the token can be cached.
+   * Sets the scope-appropriate fallback only when nothing is configured.
    */
-  ensureCredentialHelper(): void {
-    // Check global first
-    try {
-      const helper = execSync('git config --global credential.helper', {
-        encoding: 'utf-8',
-      }).trim();
-      if (helper) { return; }
-    } catch { /* not set */ }
-
-    // Check local (if in a repo)
-    const cwd = this.getWorkspacePath();
-    if (cwd) {
-      try {
-        const helper = execSync('git config --local credential.helper', {
-          cwd,
-          encoding: 'utf-8',
-        }).trim();
-        if (helper) { return; }
-      } catch { /* not set */ }
+  ensureCredentialHelper(repoRoot?: string): void {
+    if (this.getConfiguredHelper(repoRoot)) {
+      return;
     }
+    // Prefer a repo-local helper so we never mutate the user's global config.
+    if (repoRoot) {
+      GitUtil.run(['config', '--local', 'credential.helper', 'store'], repoRoot);
+    } else {
+      GitUtil.run(['config', '--global', 'credential.helper', 'store']);
+    }
+  }
 
-    // Nothing configured — set 'store' globally as fallback
-    execSync('git config --global credential.helper store', {
-      encoding: 'utf-8',
-    });
+  /** Returns the effective credential helper, or undefined if none is set. */
+  private getConfiguredHelper(repoRoot?: string): string | undefined {
+    // `git config credential.helper` resolves global + local together when
+    // run inside the repo; without a repo, only global applies.
+    return GitUtil.tryRun(['config', '--get', 'credential.helper'], repoRoot);
   }
 
   /**
-   * Clear any cached credentials for the host, then approve new ones.
+   * Configure the repository so that HTTPS push/pull authenticates as
+   * `username` using `token`. Must be called with a real repo root.
    */
-  setCredentials(host: string, username: string, token: string): void {
-    this.rejectCredentials(host);
+  applyToRepo(repoRoot: string, host: string, username: string, token: string): void {
+    // Distinguish credentials by path so multiple accounts on the same host
+    // don't collide in the credential store.
+    GitUtil.run(['config', '--local', 'credential.useHttpPath', 'true'], repoRoot);
+    this.ensureCredentialHelper(repoRoot);
 
-    const input = [
-      'protocol=https',
-      `host=${host}`,
-      `username=${username}`,
-      `password=${token}`,
-      '',
-      '',
-    ].join('\n');
-
-    execSync('git credential approve', {
-      input,
-      encoding: 'utf-8',
-    });
+    // Refresh the stored credential for this exact user/host.
+    this.rejectCredentials(host, repoRoot);
+    this.approveCredentials(host, username, token, repoRoot);
   }
 
-  /**
-   * Remove cached credentials for a host.
-   */
-  rejectCredentials(host: string): void {
-    const input = [
-      'protocol=https',
-      `host=${host}`,
-      '',
-      '',
-    ].join('\n');
-
+  /** Feed a credential into the configured helper. */
+  private approveCredentials(host: string, username: string, token: string, repoRoot?: string): void {
+    const input = `protocol=https\nhost=${host}\nusername=${username}\npassword=${token}\n\n`;
     try {
-      execSync('git credential reject', {
-        input,
-        encoding: 'utf-8',
-      });
+      GitUtil.runWithInput(['credential', 'approve'], input, repoRoot);
     } catch {
-      // Credential may not exist — that is fine
+      // A helper may reject `approve` without a prior fill; the URL-embedded
+      // username plus useHttpPath still lets git prompt/cache correctly.
+    }
+  }
+
+  /** Remove a cached credential for a host. Safe if none exists. */
+  rejectCredentials(host: string, repoRoot?: string): void {
+    const input = `protocol=https\nhost=${host}\n\n`;
+    try {
+      GitUtil.runWithInput(['credential', 'reject'], input, repoRoot);
+    } catch {
+      // Credential may not exist — that is fine.
     }
   }
 
   /**
-   * Convert the current repo's origin remote from SSH to HTTPS format.
-   * git@github.com:user/repo.git  →  https://github.com/user/repo.git
-   * git@some-alias:user/repo.git  →  https://github.com/user/repo.git
+   * Rewrite the repo's `origin` remote to HTTPS, embedding `username` so git
+   * picks the right credential. Only touches github.com remotes.
+   * Returns true if the remote was changed.
    */
-  convertRemoteToHttps(): void {
-    const cwd = this.getWorkspacePath();
-    if (!cwd) { return; }
-
-    try {
-      const currentUrl = execSync('git remote get-url origin', {
-        cwd,
-        encoding: 'utf-8',
-      }).trim();
-
-      const sshMatch = currentUrl.match(/^git@[^:]+:(.+)$/);
-      if (sshMatch) {
-        const repoPath = sshMatch[1];
-        const httpsUrl = `https://github.com/${repoPath}`;
-        execSync(`git remote set-url origin "${httpsUrl}"`, {
-          cwd,
-          encoding: 'utf-8',
-        });
-      }
-    } catch {
-      // Not a git repo or no origin remote — skip
+  convertRemoteToHttps(repoRoot: string, username: string): boolean {
+    const currentUrl = GitUtil.tryRun(['remote', 'get-url', 'origin'], repoRoot);
+    if (!currentUrl) {
+      return false;
     }
+
+    const parsed = parseGitHubRemote(currentUrl);
+    if (!parsed) {
+      return false; // Not a github.com remote — leave it alone.
+    }
+
+    const encodedUser = encodeURIComponent(username);
+    const newUrl = `https://${encodedUser}@github.com/${parsed.repoPath}`;
+    if (newUrl === currentUrl) {
+      return false;
+    }
+
+    GitUtil.run(['remote', 'set-url', 'origin', newUrl], repoRoot);
+    return true;
   }
 }

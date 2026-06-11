@@ -13,6 +13,8 @@ Manage and switch between multiple GitHub accounts in VS Code — choose HTTPS, 
 - **Inline CRUD Actions** — Edit, duplicate, and delete profiles directly from the sidebar
 - **Profile Avatars** — Upload an image or paste a GitHub avatar URL for each profile
 - **Token Storage** — Securely stores GitHub PATs using VS Code's encrypted secret storage
+- **Token Validation** — Verifies HTTPS tokens against the GitHub API on save, so bad or expired tokens are caught before your next push
+- **Drift Detection** — Warns in the status bar (and via **GitFlip: Check Current Repository**) when a repo's git identity doesn't match the active profile
 - **Webview Sidebar** — Rich profile cards with avatars, auth badges (SSH/HTTPS), active indicator, and inline actions
 - **Status Bar** — Shows the active profile at a glance; click to switch
 
@@ -60,6 +62,7 @@ Just switches `user.name` and `user.email` — no authentication setup. Useful w
 | `GitFlip: Remove Profile` | Delete a profile |
 | `GitFlip: Duplicate Profile` | Duplicate an existing profile |
 | `GitFlip: Show Current Profile` | Display the active profile details |
+| `GitFlip: Check Current Repository` | Compare the current repo's git identity against the active profile |
 
 ## Settings
 
@@ -83,7 +86,14 @@ The GitFlip sidebar displays all your profiles as rich cards with:
 When you switch profiles, GitFlip runs `git config user.name` and `git config user.email` with the selected profile's values. You choose whether to apply this to the current repository (local) or globally.
 
 ### HTTPS Credentials
-For HTTPS profiles, GitFlip uses `git credential approve` to feed your PAT into the system's credential helper (macOS Keychain, Windows Credential Manager, or `git-credential-store`). When switching away, old credentials are cleared with `git credential reject`. If no credential helper is configured, GitFlip sets `credential.helper store` as a fallback.
+For HTTPS profiles, GitFlip configures the **current repository** so it authenticates as the selected account:
+
+- The repo's `origin` remote is rewritten to `https://<username>@github.com/owner/repo.git` so git knows which account to use.
+- `credential.useHttpPath` is enabled locally so multiple GitHub accounts don't collide in the credential store.
+- Your PAT is fed into the credential helper for that username/host.
+- If no credential helper is configured, GitFlip sets a repo-local `credential.helper store` fallback rather than touching your global config.
+
+Because credentials are scoped per repository and per username, switching profiles in one repo never breaks authentication in another. Remote rewriting only applies to `github.com` remotes — other hosts are left untouched.
 
 ### SSH Keys
 For SSH profiles with a key and host alias, GitFlip adds an entry to `~/.ssh/config`:

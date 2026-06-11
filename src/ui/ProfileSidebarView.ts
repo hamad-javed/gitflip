@@ -1,5 +1,6 @@
+import * as crypto from 'crypto';
 import * as vscode from 'vscode';
-import { Profile, resolveAuthMethod } from '../types';
+import { Profile, resolveAuthMethod, isSafeAvatarUrl } from '../types';
 import { ProfileManager } from '../services/ProfileManager';
 
 export class ProfileSidebarViewProvider implements vscode.WebviewViewProvider {
@@ -66,6 +67,9 @@ export class ProfileSidebarViewProvider implements vscode.WebviewViewProvider {
   }
 
   private getHtml(profiles: Profile[], activeId: string | undefined): string {
+    const nonce = crypto.randomBytes(16).toString('base64');
+    const cspSource = this.view?.webview.cspSource ?? '';
+
     const profileCards = profiles.map(p => {
       const isActive = p.id === activeId;
       const badges: string[] = [];
@@ -73,9 +77,11 @@ export class ProfileSidebarViewProvider implements vscode.WebviewViewProvider {
       if (method === 'ssh') { badges.push('SSH'); }
       else if (method === 'https') { badges.push('HTTPS'); }
 
-      const avatarHtml = p.avatarUrl
-        ? `<img class="avatar-img" src="${this.escapeHtml(p.avatarUrl)}" alt="" />`
+      const safeAvatar = p.avatarUrl && isSafeAvatarUrl(p.avatarUrl) ? p.avatarUrl : '';
+      const avatarHtml = safeAvatar
+        ? `<img class="avatar-img" src="${this.escapeHtml(safeAvatar)}" alt="" />`
         : `<svg class="avatar-default" width="20" height="20" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM3 13s-1 0-1-1 1-5 6-5 6 4 6 5-1 1-1 1H3z"/></svg>`;
+      const id = this.escapeHtml(p.id);
 
       return /* html */ `
         <div class="profile-card ${isActive ? 'active' : ''}">
@@ -95,16 +101,16 @@ export class ProfileSidebarViewProvider implements vscode.WebviewViewProvider {
             ` : ''}
           </div>
           <div class="profile-actions">
-            ${!isActive ? `<button class="action-btn switch-btn" title="Switch to this profile" onclick="send('switch','${p.id}')">
+            ${!isActive ? `<button class="action-btn switch-btn" title="Switch to this profile" data-cmd="switch" data-id="${id}">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M5.22 14.78a.75.75 0 0 0 1.06-1.06L4.56 12h8.69a.75.75 0 0 0 0-1.5H4.56l1.72-1.72a.75.75 0 0 0-1.06-1.06l-3 3a.75.75 0 0 0 0 1.06l3 3zm5.56-6.5a.75.75 0 0 1 0-1.06l3-3a.75.75 0 0 1 1.06 0l-.53.53.53-.53a.75.75 0 0 1 0 1.06L13.12 6h-8.69a.75.75 0 0 1 0-1.5h8.69l-1.28-1.28-.53-.53a.75.75 0 0 1 0-1.06z" clip-rule="evenodd"/></svg>
             </button>` : ''}
-            <button class="action-btn edit-btn" title="Edit" onclick="send('edit','${p.id}')">
+            <button class="action-btn edit-btn" title="Edit" data-cmd="edit" data-id="${id}">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M13.23 1h-1.46L3.52 9.25l-.16.22L1 13.59 2.41 15l4.12-2.36.22-.16L15 4.23V2.77L13.23 1zM2.41 13.59l1.51-3 1.45 1.45-2.96 1.55zm3.83-2.06L4.47 9.76l6-5.96 1.77 1.77-6 5.96z"/></svg>
             </button>
-            <button class="action-btn duplicate-btn" title="Duplicate" onclick="send('duplicate','${p.id}')">
+            <button class="action-btn duplicate-btn" title="Duplicate" data-cmd="duplicate" data-id="${id}">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 4h1V2h7v7h-2v1h3V1H4v3zm-1 1H1v10h10v-2H3V5z"/></svg>
             </button>
-            <button class="action-btn delete-btn" title="Delete" onclick="send('delete','${p.id}')">
+            <button class="action-btn delete-btn" title="Delete" data-cmd="delete" data-id="${id}">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M10 3h3v1h-1v9l-1 1H5l-1-1V4H3V3h3V2a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1zM9 2H7v1h2V2zM5 4v9h6V4H5zm1 2h1v5H6V6zm3 0h1v5H9V6z"/></svg>
             </button>
           </div>
@@ -116,7 +122,7 @@ export class ProfileSidebarViewProvider implements vscode.WebviewViewProvider {
       <div class="empty-state">
         <div class="empty-icon">&#x1F464;</div>
         <p>No profiles yet</p>
-        <button class="add-btn" onclick="send('add')">+ Add Profile</button>
+        <button class="add-btn" data-cmd="add">+ Add Profile</button>
       </div>
     ` : '';
 
@@ -125,6 +131,7 @@ export class ProfileSidebarViewProvider implements vscode.WebviewViewProvider {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} https: data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <style>
     * {
       margin: 0;
@@ -346,11 +353,13 @@ export class ProfileSidebarViewProvider implements vscode.WebviewViewProvider {
 <body>
   ${emptyState}
   ${profileCards}
-  <script>
+  <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    function send(command, id) {
-      vscode.postMessage({ command, id });
-    }
+    document.querySelectorAll('[data-cmd]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        vscode.postMessage({ command: el.dataset.cmd, id: el.dataset.id });
+      });
+    });
   </script>
 </body>
 </html>`;

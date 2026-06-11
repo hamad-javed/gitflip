@@ -1,31 +1,36 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
-import * as vscode from 'vscode';
 import { Profile } from '../types';
+import { GitUtil } from './GitUtil';
+import { HostBlock, MARKER_PREFIX, parseHostBlocks } from './sshConfigParser';
 
 const SSH_CONFIG_PATH = path.join(os.homedir(), '.ssh', 'config');
-const MARKER_PREFIX = '# GitFlip:';
 
 interface SSHHostEntry {
   marker: string;
   host: string;
-  hostName: string;
-  user: string;
-  identityFile: string;
+  hostName?: string;
+  user?: string;
+  identityFile?: string;
 }
 
 export class SSHConfigService {
+  /** Add a host block for an SSH profile if the alias is not already present. */
   addHostEntry(profile: Profile): void {
     if (!profile.sshKeyPath || !profile.sshHost) {
       return;
     }
 
-    // Check if this host already exists in the config (any origin, not just GitFlip)
-    const existingHosts = this.getAllSSHConfigHosts();
-    if (existingHosts.some(h => h.host === profile.sshHost)) {
-      return;
+    const blocks = this.parseHostBlocks();
+    if (blocks.some(b => b.host === profile.sshHost)) {
+      return; // Host already exists (from any source) — don't duplicate.
+    }
+
+    this.ensureSSHConfigExists();
+    let existing = fs.readFileSync(SSH_CONFIG_PATH, 'utf-8');
+    if (existing.length > 0 && !existing.endsWith('\n')) {
+      existing += '\n';
     }
 
     const entry = [
@@ -39,11 +44,14 @@ export class SSHConfigService {
       '',
     ].join('\n');
 
-    this.ensureSSHConfigExists();
-    const existing = fs.readFileSync(SSH_CONFIG_PATH, 'utf-8');
-    fs.writeFileSync(SSH_CONFIG_PATH, existing + entry, 'utf-8');
+    this.writeConfig(existing + entry);
   }
 
+  /**
+   * Remove a GitFlip-managed host block by alias. Only removes blocks that
+   * GitFlip created (marked with the GitFlip comment); never touches blocks
+   * the user wrote by hand.
+   */
   removeHostEntry(hostAlias: string): void {
     if (!fs.existsSync(SSH_CONFIG_PATH)) {
       return;
@@ -51,134 +59,149 @@ export class SSHConfigService {
 
     const content = fs.readFileSync(SSH_CONFIG_PATH, 'utf-8');
     const lines = content.split('\n');
-    const result: string[] = [];
-    let skipping = false;
+    const blocks = this.parseHostBlocks(lines);
 
+    const target = blocks.find(b => b.host === hostAlias && b.markedByGitFlip);
+    if (!target) {
+      return; // Not present, or not GitFlip-managed — leave the file alone.
+    }
+
+    // Drop the block plus its marker line.
+    const removeFrom = target.markerLine ?? target.startLine;
+    const kept: string[] = [];
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-
-      // Start skipping when we find a GitFlip marker followed by matching Host
-      if (line.startsWith(MARKER_PREFIX)) {
-        const nextLine = lines[i + 1];
-        if (nextLine && nextLine.trim() === `Host ${hostAlias}`) {
-          skipping = true;
-          continue;
-        }
-      }
-
-      if (skipping) {
-        // Stop skipping at next Host block or another marker
-        if ((line.startsWith('Host ') && !line.startsWith('HostName')) || line.startsWith(MARKER_PREFIX)) {
-          skipping = false;
-          result.push(line);
-        }
-        // Skip indented lines belonging to the current Host block
+      if (i >= removeFrom && i < target.endLine) {
         continue;
       }
-
-      result.push(line);
+      kept.push(lines[i]);
     }
 
-    fs.writeFileSync(SSH_CONFIG_PATH, result.join('\n'), 'utf-8');
+    // Collapse the run of blank lines the removal may have left behind.
+    const cleaned = kept.join('\n').replace(/\n{3,}/g, '\n\n');
+    this.writeConfig(cleaned);
   }
 
-  updateRemoteUrl(profile: Profile): void {
-    if (!profile.sshHost) {
-      return;
+  /**
+   * Rewrite the repo's `origin` remote to use the profile's SSH host alias.
+   * Only rewrites URLs that already point at GitHub (direct or via an alias
+   * whose HostName resolves to github.com). Returns true if changed.
+   */
+  updateRemoteUrl(profile: Profile, repoRoot: string): boolean {
+    if (!profile.sshHost || !repoRoot) {
+      return false;
     }
 
-    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (!workspacePath) {
-      return;
+    const currentUrl = GitUtil.tryRun(['remote', 'get-url', 'origin'], repoRoot);
+    if (!currentUrl) {
+      return false;
     }
 
-    try {
-      const currentUrl = execSync('git remote get-url origin', {
-        cwd: workspacePath,
-        encoding: 'utf-8',
-      }).trim();
+    const repoPath = this.extractGitHubRepoPath(currentUrl);
+    if (!repoPath) {
+      return false; // Not a GitHub remote — don't touch it.
+    }
 
-      // Match SSH-style URLs: git@github.com:user/repo.git or git@host-alias:user/repo.git
-      const sshMatch = currentUrl.match(/^git@[^:]+:(.+)$/);
-      if (sshMatch) {
-        const repoPath = sshMatch[1];
-        const newUrl = `git@${profile.sshHost}:${repoPath}`;
-        execSync(`git remote set-url origin "${newUrl}"`, {
-          cwd: workspacePath,
-          encoding: 'utf-8',
-        });
+    const newUrl = `git@${profile.sshHost}:${repoPath}`;
+    if (newUrl === currentUrl) {
+      return false;
+    }
+
+    GitUtil.run(['remote', 'set-url', 'origin', newUrl], repoRoot);
+    return true;
+  }
+
+  /**
+   * Extract the `owner/repo(.git)` path from a remote URL if it points at
+   * github.com — directly, via HTTPS, or via an SSH host alias whose
+   * HostName is github.com. Returns undefined otherwise.
+   */
+  private extractGitHubRepoPath(url: string): string | undefined {
+    // git@github.com:owner/repo.git
+    const directSsh = url.match(/^git@github\.com:(.+)$/);
+    if (directSsh) {
+      return directSsh[1];
+    }
+
+    // ssh://git@github.com/owner/repo.git
+    const sshProto = url.match(/^ssh:\/\/git@github\.com\/(.+)$/);
+    if (sshProto) {
+      return sshProto[1];
+    }
+
+    // https://[user@]github.com/owner/repo(.git)
+    const https = url.match(/^https:\/\/(?:[^@/]+@)?github\.com\/(.+)$/);
+    if (https) {
+      return https[1];
+    }
+
+    // git@<alias>:owner/repo.git — only if the alias resolves to github.com.
+    const aliasSsh = url.match(/^git@([^:]+):(.+)$/);
+    if (aliasSsh) {
+      const alias = aliasSsh[1];
+      const repoPath = aliasSsh[2];
+      const block = this.parseHostBlocks().find(b => b.host === alias);
+      if (block && this.hostNameFor(block) === 'github.com') {
+        return repoPath;
       }
-    } catch {
-      // No remote or not a git repo - silently skip
     }
+
+    return undefined;
   }
 
-  getExistingEntries(): SSHHostEntry[] {
+  /** Read the HostName directive of a parsed block. */
+  private hostNameFor(block: HostBlock): string | undefined {
     if (!fs.existsSync(SSH_CONFIG_PATH)) {
-      return [];
+      return undefined;
     }
-
-    const content = fs.readFileSync(SSH_CONFIG_PATH, 'utf-8');
-    const lines = content.split('\n');
-    const entries: SSHHostEntry[] = [];
-    let currentMarker = '';
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (line.startsWith(MARKER_PREFIX)) {
-        currentMarker = line.substring(MARKER_PREFIX.length).trim();
-      } else if (line.startsWith('Host ') && currentMarker) {
-        const entry: Partial<SSHHostEntry> = {
-          marker: currentMarker,
-          host: line.substring(5).trim(),
-        };
-
-        // Read subsequent indented lines
-        for (let j = i + 1; j < lines.length; j++) {
-          const sub = lines[j].trim();
-          if (sub.startsWith('HostName ')) {
-            entry.hostName = sub.substring(9).trim();
-          } else if (sub.startsWith('User ')) {
-            entry.user = sub.substring(5).trim();
-          } else if (sub.startsWith('IdentityFile ')) {
-            entry.identityFile = sub.substring(13).trim();
-          } else if (!sub || sub.startsWith('Host ') || sub.startsWith('#')) {
-            break;
-          }
-        }
-
-        if (entry.host && entry.identityFile) {
-          entries.push(entry as SSHHostEntry);
-        }
-        currentMarker = '';
+    const lines = fs.readFileSync(SSH_CONFIG_PATH, 'utf-8').split('\n');
+    for (let i = block.startLine + 1; i < block.endLine; i++) {
+      const m = lines[i].trim().match(/^HostName\s+(.+)$/i);
+      if (m) {
+        return m[1].trim();
       }
+    }
+    return undefined;
+  }
+
+  /** Return all GitFlip-managed host entries with their key paths. */
+  getExistingEntries(): SSHHostEntry[] {
+    const lines = this.readConfigLines();
+    const entries: SSHHostEntry[] = [];
+
+    for (const block of this.parseHostBlocks(lines)) {
+      if (!block.markedByGitFlip) {
+        continue;
+      }
+      const entry: SSHHostEntry = { marker: '', host: block.host, identityFile: block.identityFile };
+      if (block.markerLine !== undefined) {
+        entry.marker = lines[block.markerLine].substring(MARKER_PREFIX.length).trim();
+      }
+      entries.push(entry);
     }
 
     return entries;
   }
 
+  /** Discover candidate SSH private keys in ~/.ssh. */
   discoverSSHKeys(): { name: string; path: string; hasPublicKey: boolean }[] {
     const sshDir = path.join(os.homedir(), '.ssh');
     if (!fs.existsSync(sshDir)) {
       return [];
     }
 
-    const files = fs.readdirSync(sshDir);
-    const publicKeyFiles = new Set(files.filter(f => f.endsWith('.pub')).map(f => f.slice(0, -4)));
+    let files: string[];
+    try {
+      files = fs.readdirSync(sshDir);
+    } catch {
+      return [];
+    }
 
+    const publicKeyFiles = new Set(files.filter(f => f.endsWith('.pub')).map(f => f.slice(0, -4)));
+    const skip = new Set(['config', 'known_hosts', 'known_hosts.old', 'authorized_keys', 'environment']);
     const keys: { name: string; path: string; hasPublicKey: boolean }[] = [];
 
     for (const file of files) {
-      // Skip non-key files
-      if (
-        file.startsWith('.') ||
-        file.endsWith('.pub') ||
-        file === 'config' ||
-        file === 'known_hosts' ||
-        file === 'known_hosts.old' ||
-        file === 'authorized_keys' ||
-        file === 'environment'
-      ) {
+      if (file.startsWith('.') || file.endsWith('.pub') || skip.has(file)) {
         continue;
       }
 
@@ -189,67 +212,62 @@ export class SSHConfigService {
           continue;
         }
 
-        // Quick check: private keys start with "-----BEGIN"
-        const head = Buffer.alloc(32);
+        // Private keys begin with a PEM/OpenSSH header.
         const fd = fs.openSync(fullPath, 'r');
+        const head = Buffer.alloc(32);
         fs.readSync(fd, head, 0, 32, 0);
         fs.closeSync(fd);
-        const headerStr = head.toString('utf-8');
-        if (!headerStr.startsWith('-----BEGIN')) {
+        if (!head.toString('utf-8').startsWith('-----BEGIN')) {
           continue;
         }
 
-        keys.push({
-          name: file,
-          path: fullPath,
-          hasPublicKey: publicKeyFiles.has(file),
-        });
+        keys.push({ name: file, path: fullPath, hasPublicKey: publicKeyFiles.has(file) });
       } catch {
-        // Skip unreadable files
+        // Skip unreadable files.
       }
     }
 
     return keys;
   }
 
+  /** Return every Host alias in the config (deduped, wildcards excluded). */
   getAllSSHConfigHosts(): { host: string; identityFile?: string }[] {
-    if (!fs.existsSync(SSH_CONFIG_PATH)) {
-      return [];
-    }
-
-    const content = fs.readFileSync(SSH_CONFIG_PATH, 'utf-8');
-    const lines = content.split('\n');
     const seen = new Set<string>();
     const hosts: { host: string; identityFile?: string }[] = [];
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.startsWith('Host ') && !line.includes('*')) {
-        const host = line.substring(5).trim();
-
-        // Skip duplicates — keep the first occurrence
-        if (seen.has(host)) {
-          continue;
-        }
-        seen.add(host);
-
-        let identityFile: string | undefined;
-
-        for (let j = i + 1; j < lines.length; j++) {
-          const sub = lines[j].trim();
-          if (sub.startsWith('Host ') || (!sub && lines[j + 1]?.trim().startsWith('Host '))) {
-            break;
-          }
-          if (sub.startsWith('IdentityFile ')) {
-            identityFile = sub.substring(13).trim();
-          }
-        }
-
-        hosts.push({ host, identityFile });
+    for (const block of this.parseHostBlocks()) {
+      if (block.host.includes('*') || seen.has(block.host)) {
+        continue;
       }
+      seen.add(block.host);
+      hosts.push({ host: block.host, identityFile: block.identityFile });
     }
 
     return hosts;
+  }
+
+  /** Parse the SSH config file (or supplied lines) into Host blocks. */
+  private parseHostBlocks(lines: string[] = this.readConfigLines()): HostBlock[] {
+    return parseHostBlocks(lines);
+  }
+
+  private readConfigLines(): string[] {
+    if (!fs.existsSync(SSH_CONFIG_PATH)) {
+      return [];
+    }
+    try {
+      return fs.readFileSync(SSH_CONFIG_PATH, 'utf-8').split('\n');
+    } catch {
+      return [];
+    }
+  }
+
+  /** Write the SSH config atomically, preserving 0600 permissions. */
+  private writeConfig(content: string): void {
+    this.ensureSSHConfigExists();
+    const tmp = `${SSH_CONFIG_PATH}.gitflip-tmp`;
+    fs.writeFileSync(tmp, content, { mode: 0o600 });
+    fs.renameSync(tmp, SSH_CONFIG_PATH);
   }
 
   private ensureSSHConfigExists(): void {

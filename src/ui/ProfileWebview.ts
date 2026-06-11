@@ -1,5 +1,9 @@
+import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
-import { Profile, resolveAuthMethod } from '../types';
+import { Profile, resolveAuthMethod, isSafeAvatarUrl } from '../types';
 import { SSHConfigService } from '../services/SSHConfigService';
 
 interface WebviewSaveMessage {
@@ -33,35 +37,37 @@ type WebviewMessage = WebviewSaveMessage | WebviewBrowseMessage | WebviewBrowseH
 
 export class ProfileWebview {
   private panel: vscode.WebviewPanel | undefined;
+  private messageSub: vscode.Disposable | undefined;
 
   constructor(
-    private extensionUri: vscode.Uri,
     private sshConfigService: SSHConfigService,
     private onSave: (data: WebviewSaveMessage['data'], existingId?: string) => Promise<void>
   ) {}
 
   show(existingProfile?: Profile, existingToken?: string): void {
-    if (this.panel) {
-      this.panel.reveal();
-    } else {
-      this.panel = vscode.window.createWebviewPanel(
-        'gitflipProfile',
-        existingProfile ? `Edit Profile: ${existingProfile.name}` : 'Add Profile',
-        vscode.ViewColumn.One,
-        { enableScripts: true }
-      );
+    // Recreate the panel each time so the message handler, title and bound
+    // profile context never go stale between Add/Edit/Duplicate invocations.
+    this.messageSub?.dispose();
+    this.panel?.dispose();
 
-      this.panel.onDidDispose(() => {
-        this.panel = undefined;
-      });
-    }
+    this.panel = vscode.window.createWebviewPanel(
+      'gitflipProfile',
+      existingProfile?.id ? `Edit Profile: ${existingProfile.name}` : 'Add Profile',
+      vscode.ViewColumn.One,
+      { enableScripts: true, retainContextWhenHidden: true }
+    );
+
+    this.panel.onDidDispose(() => {
+      this.messageSub?.dispose();
+      this.messageSub = undefined;
+      this.panel = undefined;
+    });
 
     this.panel.webview.html = this.getHtml(existingProfile, existingToken);
 
-    this.panel.webview.onDidReceiveMessage(async (msg: WebviewMessage) => {
+    this.messageSub = this.panel.webview.onDidReceiveMessage(async (msg: WebviewMessage) => {
       if (msg.command === 'save') {
-        await this.onSave(msg.data, existingProfile?.id);
-        this.panel?.dispose();
+        await this.onSave(msg.data, existingProfile?.id || undefined);
       } else if (msg.command === 'browseSSHKeys') {
         await this.handleBrowseSSHKeys();
       } else if (msg.command === 'browseSSHHosts') {
@@ -70,6 +76,11 @@ export class ProfileWebview {
         await this.handleBrowseAvatar();
       }
     });
+  }
+
+  /** Close the editor panel — called by the save handler after a successful save. */
+  close(): void {
+    this.panel?.dispose();
   }
 
   private async handleBrowseSSHKeys(): Promise<void> {
@@ -83,7 +94,7 @@ export class ProfileWebview {
       if (action === 'Browse Files') {
         const uris = await vscode.window.showOpenDialog({
           title: 'Select SSH Private Key',
-          defaultUri: vscode.Uri.file(require('os').homedir() + '/.ssh'),
+          defaultUri: vscode.Uri.file(path.join(os.homedir(), '.ssh')),
           canSelectMany: false,
           openLabel: 'Select Key',
         });
@@ -179,8 +190,6 @@ export class ProfileWebview {
       },
     });
     if (uris?.[0]) {
-      const fs = require('fs') as typeof import('fs');
-      const path = require('path') as typeof import('path');
       const filePath = uris[0].fsPath;
       const ext = path.extname(filePath).toLowerCase().replace('.', '');
       const mimeMap: Record<string, string> = {
@@ -188,24 +197,54 @@ export class ProfileWebview {
         gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp',
       };
       const mime = mimeMap[ext] || 'image/png';
-      const data = fs.readFileSync(filePath);
-      const base64 = data.toString('base64');
-      const dataUri = `data:${mime};base64,${base64}`;
-      this.panel?.webview.postMessage({
-        command: 'setAvatar',
-        url: dataUri,
-      });
+
+      try {
+        const stat = fs.statSync(filePath);
+        // Cap embedded avatars at 1 MB — data URIs bloat globalState.
+        if (stat.size > 1024 * 1024) {
+          vscode.window.showWarningMessage('Avatar image is larger than 1 MB. Please choose a smaller image.');
+          return;
+        }
+        const base64 = fs.readFileSync(filePath).toString('base64');
+        this.panel?.webview.postMessage({
+          command: 'setAvatar',
+          url: `data:${mime};base64,${base64}`,
+        });
+      } catch {
+        vscode.window.showErrorMessage('Could not read the selected image file.');
+      }
     }
+  }
+
+  private escapeHtml(str: string): string {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   private getHtml(profile?: Profile, token?: string): string {
     const authMethod = profile ? resolveAuthMethod(profile) : 'none';
+    const nonce = crypto.randomBytes(16).toString('base64');
+    const cspSource = this.panel?.webview.cspSource ?? '';
+
+    // Pre-escape every value interpolated into the document. Avatars are only
+    // emitted if they pass the safe-URL allowlist (https or image data URI).
+    const safeAvatar = profile?.avatarUrl && isSafeAvatarUrl(profile.avatarUrl)
+      ? profile.avatarUrl
+      : '';
+    const e = (s: string | undefined) => this.escapeHtml(s ?? '');
+    const avatarUrlField = safeAvatar && !safeAvatar.startsWith('data:') ? safeAvatar : '';
+
     return /* html */ `
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} https: data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <title>${profile ? 'Edit' : 'Add'} Profile</title>
   <style>
     body {
@@ -406,8 +445,8 @@ export class ProfileWebview {
 
   <div class="avatar-section">
     <div class="avatar-preview" id="avatarPreview">
-      ${profile?.avatarUrl
-        ? `<img src="${profile.avatarUrl}" alt="avatar" />`
+      ${safeAvatar
+        ? `<img src="${e(safeAvatar)}" alt="avatar" />`
         : '<span class="avatar-placeholder">&#x1F464;</span>'}
     </div>
     <div class="avatar-controls">
@@ -418,17 +457,18 @@ export class ProfileWebview {
         <button type="button" class="remove-btn" id="removeAvatarBtn">Remove</button>
       </div>
       <div class="avatar-url-row" id="avatarUrlRow" style="display:none;">
-        <input type="text" id="avatarUrlInput" placeholder="https://github.com/username.png" value="${profile?.avatarUrl && !profile.avatarUrl.startsWith('data:') ? profile.avatarUrl : ''}" />
+        <input type="text" id="avatarUrlInput" placeholder="https://github.com/username.png" value="${e(avatarUrlField)}" />
         <button type="button" class="browse-btn" id="applyUrlBtn" style="padding:4px 10px;font-size:12px;margin-top:0;">Apply</button>
       </div>
+      <div class="hint" id="avatarError" style="color:var(--vscode-errorForeground);display:none;">Avatar must be an https:// URL.</div>
     </div>
   </div>
-  <input type="hidden" id="avatarUrl" value="${profile?.avatarUrl ?? ''}" />
+  <input type="hidden" id="avatarUrl" value="${e(safeAvatar)}" />
 
   <div class="form-group">
     <label for="name">Profile Name</label>
     <div class="hint">A friendly name like "Work" or "Personal"</div>
-    <input type="text" id="name" value="${profile?.name ?? ''}" placeholder="e.g. Personal" />
+    <input type="text" id="name" value="${e(profile?.name)}" placeholder="e.g. Personal" />
   </div>
 
   <div class="separator"></div>
@@ -436,12 +476,12 @@ export class ProfileWebview {
 
   <div class="form-group">
     <label for="gitUserName">Git User Name</label>
-    <input type="text" id="gitUserName" value="${profile?.gitUserName ?? ''}" placeholder="e.g. John Doe" />
+    <input type="text" id="gitUserName" value="${e(profile?.gitUserName)}" placeholder="e.g. John Doe" />
   </div>
 
   <div class="form-group">
     <label for="gitEmail">Git Email</label>
-    <input type="text" id="gitEmail" value="${profile?.gitEmail ?? ''}" placeholder="e.g. john@example.com" />
+    <input type="text" id="gitEmail" value="${e(profile?.gitEmail)}" placeholder="e.g. john@example.com" />
   </div>
 
   <div class="separator"></div>
@@ -478,7 +518,7 @@ export class ProfileWebview {
     <div class="form-group">
       <label for="token">GitHub Personal Access Token</label>
       <div class="hint">Stored securely in VS Code's secret storage. Used via git credential helper.</div>
-      <input type="password" id="token" value="${token ?? ''}" placeholder="ghp_..." />
+      <input type="password" id="token" value="${e(token)}" placeholder="ghp_..." />
     </div>
   </div>
 
@@ -488,7 +528,7 @@ export class ProfileWebview {
       <label for="sshKeyPath">SSH Private Key Path</label>
       <div class="hint">Full path to your SSH key, or click "Browse" to discover keys in ~/.ssh/</div>
       <div class="input-row">
-        <input type="text" id="sshKeyPath" value="${profile?.sshKeyPath ?? ''}" placeholder="~/.ssh/id_ed25519" />
+        <input type="text" id="sshKeyPath" value="${e(profile?.sshKeyPath)}" placeholder="~/.ssh/id_ed25519" />
         <button class="browse-btn" id="browseKeysBtn" type="button">Browse Keys</button>
       </div>
     </div>
@@ -497,26 +537,49 @@ export class ProfileWebview {
       <label for="sshHost">SSH Host Alias</label>
       <div class="hint">A unique alias, or click "Browse" to pick from existing ~/.ssh/config hosts</div>
       <div class="input-row">
-        <input type="text" id="sshHost" value="${profile?.sshHost ?? ''}" placeholder="e.g. github-personal" />
+        <input type="text" id="sshHost" value="${e(profile?.sshHost)}" placeholder="e.g. github-personal" />
         <button class="browse-btn" id="browseHostsBtn" type="button">Browse Hosts</button>
       </div>
     </div>
   </div>
 
+  <div id="formError" class="hint" style="color:var(--vscode-errorForeground);display:none;margin-top:8px;"></div>
   <button id="saveBtn">${profile ? 'Save Changes' : 'Create Profile'}</button>
 
-  <script>
+  <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
+
+    // Mirror of isSafeAvatarUrl() in types.ts — only https and image data URIs.
+    function isSafeAvatarUrl(url) {
+      const t = (url || '').trim();
+      return t.startsWith('https://') ||
+        /^data:image\\/(png|jpeg|gif|svg\\+xml|webp);base64,/i.test(t);
+    }
+
+    function setAvatarError(show) {
+      const el = document.getElementById('avatarError');
+      if (el) { el.style.display = show ? 'block' : 'none'; }
+    }
 
     function updateAvatarPreview(url) {
       const preview = document.getElementById('avatarPreview');
       const hidden = document.getElementById('avatarUrl');
-      if (url) {
-        preview.innerHTML = '<img src="' + url + '" alt="avatar" />';
+      if (url && isSafeAvatarUrl(url)) {
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = 'avatar';
+        preview.replaceChildren(img);
         hidden.value = url;
+        setAvatarError(false);
+      } else if (url) {
+        setAvatarError(true);
       } else {
-        preview.innerHTML = '<span class="avatar-placeholder">&#x1F464;</span>';
+        const span = document.createElement('span');
+        span.className = 'avatar-placeholder';
+        span.textContent = '\\u{1F464}';
+        preview.replaceChildren(span);
         hidden.value = '';
+        setAvatarError(false);
       }
     }
 
@@ -579,11 +642,27 @@ export class ProfileWebview {
       const gitUserName = document.getElementById('gitUserName').value.trim();
       const gitEmail = document.getElementById('gitEmail').value.trim();
 
-      if (!name || !gitUserName || !gitEmail) {
+      const authMethod = document.querySelector('input[name="authMethod"]:checked').value;
+
+      // The extension re-validates and reports detailed errors; this is just a
+      // fast local guard so the obvious empty-field case has instant feedback.
+      const missing = [];
+      if (!name) { missing.push('name'); }
+      if (!gitUserName) { missing.push('user name'); }
+      if (!gitEmail) { missing.push('email'); }
+      if (authMethod === 'ssh' && !document.getElementById('sshKeyPath').value.trim()) {
+        missing.push('SSH key path');
+      }
+      if (authMethod === 'ssh' && !document.getElementById('sshHost').value.trim()) {
+        missing.push('SSH host alias');
+      }
+      const banner = document.getElementById('formError');
+      if (missing.length > 0) {
+        banner.textContent = 'Please fill in: ' + missing.join(', ') + '.';
+        banner.style.display = 'block';
         return;
       }
-
-      const authMethod = document.querySelector('input[name="authMethod"]:checked').value;
+      banner.style.display = 'none';
 
       vscode.postMessage({
         command: 'save',
@@ -606,6 +685,7 @@ export class ProfileWebview {
   }
 
   dispose(): void {
+    this.messageSub?.dispose();
     this.panel?.dispose();
   }
 }
